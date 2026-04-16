@@ -1,15 +1,20 @@
 # groupCollectionRootMap plugin
 
-Providence application plugin that enforces collection parent assignment rules based on user role and user ID mapping.
+Providence application plugin that scopes collection hierarchy access based on user role and user ID mapping.
 
 ## What it does
 
 - Optionally gates checks by required role (for example, `cataloguer`).
 - Maps user IDs to allowed root collection IDs.
+- Expands each mapped root into its full descendant subtree.
 - Validates collection parent assignment before insert and update.
-- Rewrites collection hierarchy bundle lookup endpoints to subtree-filtered plugin endpoints.
+- Rewrites hierarchy bundle lookup endpoints for both collection and object editors to subtree-filtered plugin endpoints.
 - Filters collection autocomplete, hierarchy level loading, hierarchy ancestor loading and hierarchy sort operations to the allowed subtree.
-- Adds clear user-facing errors in the editor when an invalid parent is selected.
+- Filters mixed object+collection hierarchy browsing when `ca_objects_x_collections_hierarchy_enabled` is enabled.
+- Blocks direct editor access to collections outside the allowed subtree.
+- Blocks direct editor access to objects linked outside the allowed subtree.
+- Blocks object creation/edit entry via `collection_id` when the selected collection is outside the allowed subtree.
+- Adds clear user-facing errors in the editor when an invalid parent or collection context is selected.
 
 ## Configuration
 
@@ -59,5 +64,7 @@ user_root_collection_map = {
 - No theme changes are required.
 - For invalid creates, the plugin blocks insert and reports an explicit message.
 - For invalid updates, the plugin preserves the existing parent and reports an explicit message.
-- Visibility filtering is applied in collection hierarchy bundle/lookup interactions.
+- Visibility filtering is currently applied in hierarchy bundle/lookup interactions and direct collection/object editor access.
+- Object scope is determined from `ca_objects_x_collections_hierarchy_relationship_type` when set; otherwise all related collections are considered.
 - If `ca_objects_x_collections_hierarchy_enabled` is enabled, mixed object+collection hierarchy browsing is filtered by this plugin via `RestrictedObjectCollectionHierarchyController`.
+- Collection/object search and browse screens are not yet subtree-filtered by this plugin; those flows will need a second pass because Providence does not expose a clean application-plugin hook at the point results are built.

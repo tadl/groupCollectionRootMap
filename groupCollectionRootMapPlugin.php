@@ -8,8 +8,10 @@
  */
 
 require_once(__CA_MODELS_DIR__ . '/ca_collections.php');
+require_once(__CA_MODELS_DIR__ . '/ca_objects.php');
 require_once(__CA_MODELS_DIR__ . '/ca_users.php');
 require_once(__CA_LIB_DIR__ . '/ApplicationError.php');
+require_once(__CA_LIB_DIR__ . '/Controller/Request/NotificationManager.php');
 require_once(__CA_APP_DIR__ . '/plugins/groupCollectionRootMap/lib/CollectionAccessScope.php');
 
 class groupCollectionRootMapPlugin extends BaseApplicationPlugin {
@@ -42,14 +44,20 @@ class groupCollectionRootMapPlugin extends BaseApplicationPlugin {
 	}
 
 	public function hookEditItem(&$params) {
+		$this->enforceEditorScope($params);
 		$this->seedDefaultParentForNewCollection($params);
+		return $params;
+	}
+
+	public function hookBeforeSaveItem(&$params) {
+		$this->enforceSaveScope($params);
 		return $params;
 	}
 
 	public function hookBundleFormHTML(&$params) {
 		if (!$this->scope->isEnabled()) { return $params; }
 		$subject = caGetOption('subject', $params, null);
-		if (!($subject instanceof ca_collections)) { return $params; }
+		if (!($subject instanceof ca_collections) && !($subject instanceof ca_objects)) { return $params; }
 
 		$request = $this->getRequest();
 		if (!$request) { return $params; }
@@ -186,6 +194,68 @@ class groupCollectionRootMapPlugin extends BaseApplicationPlugin {
 		}
 	}
 
+	private function enforceEditorScope(array &$params) : void {
+		if (!$this->scope->isEnabled()) { return; }
+
+		$instance = caGetOption('instance', $params, null);
+		if (!($instance instanceof ca_collections) && !($instance instanceof ca_objects)) { return; }
+
+		$request = caGetOption('request', $params, $this->getRequest());
+		if (!($request instanceof RequestHTTP)) { return; }
+		$user = (isset($request->user) && ($request->user instanceof ca_users)) ? $request->user : null;
+		$scope = $this->scope->getScopeForUser($user);
+		if (!($scope['restricted'] ?? false)) { return; }
+
+		if (($instance instanceof ca_collections) && $instance->getPrimaryKey() && !$this->scope->canAccessCollection($user, $instance)) {
+			$this->denyEditorAccess($request, _t('You do not have access to this collection or its hierarchy branch.'));
+			return;
+		}
+
+		if ($instance instanceof ca_objects) {
+			if ($instance->getPrimaryKey() && !$this->scope->canAccessObject($user, $instance)) {
+				$this->denyEditorAccess($request, _t('You do not have access to this object because it is outside your allowed collection hierarchy.'));
+				return;
+			}
+
+			$collection_id = (int)$request->getParameter('collection_id', pInteger);
+			if (($collection_id > 0) && !$this->scope->isCollectionIDAllowed($collection_id, $scope)) {
+				$this->denyEditorAccess($request, _t('You cannot create or edit an object under the selected collection.'));
+				return;
+			}
+		}
+	}
+
+	private function enforceSaveScope(array &$params) : void {
+		if (!$this->scope->isEnabled()) { return; }
+
+		$instance = caGetOption('instance', $params, null);
+		if (!($instance instanceof ca_collections) && !($instance instanceof ca_objects)) { return; }
+
+		$request = caGetOption('request', $params, $this->getRequest());
+		if (!($request instanceof RequestHTTP)) { return; }
+		$user = (isset($request->user) && ($request->user instanceof ca_users)) ? $request->user : null;
+		$scope = $this->scope->getScopeForUser($user);
+		if (!($scope['restricted'] ?? false)) { return; }
+
+		if (($instance instanceof ca_collections) && $instance->getPrimaryKey() && !$this->scope->canAccessCollection($user, $instance)) {
+			$this->postScopeSaveError($instance, $request, _t('You cannot save this collection because it is outside your allowed collection hierarchy.'), 'ca_collections.collection_id');
+			return;
+		}
+
+		if ($instance instanceof ca_objects) {
+			if ($instance->getPrimaryKey() && !$this->scope->canAccessObject($user, $instance)) {
+				$this->postScopeSaveError($instance, $request, _t('You cannot save this object because it is outside your allowed collection hierarchy.'), 'ca_objects.object_id');
+				return;
+			}
+
+			$collection_id = (int)$request->getParameter('collection_id', pInteger);
+			if (($collection_id > 0) && !$this->scope->isCollectionIDAllowed($collection_id, $scope)) {
+				$this->postScopeSaveError($instance, $request, _t('You cannot assign this object to the selected collection.'), 'ca_objects.collection_id');
+				return;
+			}
+		}
+	}
+
 	private function seedDefaultParentForNewCollection(array &$params) : void {
 		if (!$this->scope->isEnabled()) { return; }
 		if ((caGetOption('table_name', $params, null) !== 'ca_collections')) { return; }
@@ -216,6 +286,30 @@ class groupCollectionRootMapPlugin extends BaseApplicationPlugin {
 		$request->setParameter($parent_field, $default_parent, 'GET');
 		$request->setParameter($parent_field, $default_parent, 'POST');
 		$params['forced_values'][$parent_field] = $default_parent;
+	}
+
+	private function denyEditorAccess(RequestHTTP $request, string $message) : void {
+		$notification = new NotificationManager($request);
+		$notification->addNotification($message, __NOTIFICATION_TYPE_ERROR__);
+
+		$response = null;
+		if (($app = AppController::getInstance()) && method_exists($app, 'getResponse')) {
+			$response = $app->getResponse();
+		}
+		if ($response) {
+			$response->setRedirect($request->config->get('error_display_url').'/n/2580?r='.urlencode($request->getFullUrlPath()));
+		}
+	}
+
+	private function postScopeSaveError($instance, RequestHTTP $request, string $message, string $source) : void {
+		if (method_exists($instance, 'postError')) {
+			$instance->postError(2580, $message, 'groupCollectionRootMapPlugin->enforceSaveScope()', $source);
+		}
+		$request->addActionErrors(
+			[new ApplicationError(2580, $message, 'groupCollectionRootMapPlugin->enforceSaveScope()', $source, false, false)],
+			'general',
+			'general'
+		);
 	}
 
 	private function forceOpenHierarchyBrowserOnNewRecord(string $html) : string {

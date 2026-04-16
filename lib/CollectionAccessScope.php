@@ -1,6 +1,7 @@
 <?php
 
 require_once(__CA_MODELS_DIR__ . '/ca_collections.php');
+require_once(__CA_MODELS_DIR__ . '/ca_objects.php');
 require_once(__CA_MODELS_DIR__ . '/ca_users.php');
 
 class CollectionAccessScope {
@@ -86,6 +87,78 @@ class CollectionAccessScope {
 		return array_fill_keys(array_map('intval', $ids), true);
 	}
 
+	public function getAllowedRootIdLookup(array $scope) : array {
+		$ids = $scope['allowed_root_ids'] ?? [];
+		if (!is_array($ids)) { return []; }
+		return array_fill_keys(array_map('intval', $ids), true);
+	}
+
+	public function getObjectCollectionRelationshipType() : ?string {
+		$rel_type = trim((string)$this->getAppConfigValue('ca_objects_x_collections_hierarchy_relationship_type'));
+		return strlen($rel_type) ? $rel_type : null;
+	}
+
+	public function isCollectionIDAllowed(int $collection_id, array $scope, array $allowed_lookup=[]) : bool {
+		if ($collection_id <= 0) { return false; }
+		if (!($scope['restricted'] ?? false)) { return true; }
+
+		if (!sizeof($allowed_lookup)) {
+			$allowed_lookup = $this->getAllowedCollectionIdLookup($scope);
+		}
+		return (bool)($allowed_lookup[$collection_id] ?? false);
+	}
+
+	public function canAccessCollection(?ca_users $user, $collection) : bool {
+		$scope = $this->getScopeForUser($user);
+		if (!($scope['restricted'] ?? false)) { return true; }
+
+		$collection_id = $this->normalizeCollectionID($collection);
+		return $this->isCollectionIDAllowed($collection_id, $scope);
+	}
+
+	public function getCollectionIDsForObject($object, ?string $relationship_type=null) : array {
+		$t_object = $this->normalizeObjectInstance($object);
+		if (!($t_object instanceof ca_objects) || !($t_object->getPrimaryKey())) { return []; }
+
+		$options = ['idsOnly' => true];
+		if ($relationship_type === null) {
+			$relationship_type = $this->getObjectCollectionRelationshipType();
+		}
+		if ($relationship_type) {
+			$options['restrictToRelationshipTypes'] = [$relationship_type];
+		}
+
+		$collection_ids = $t_object->getRelatedItems('ca_collections', $options);
+		if (!is_array($collection_ids)) { return []; }
+
+		$collection_ids = array_values(array_unique(array_filter(array_map('intval', $collection_ids), function($id) {
+			return ($id > 0);
+		})));
+		sort($collection_ids, SORT_NUMERIC);
+		return $collection_ids;
+	}
+
+	public function isObjectIDAllowed(int $object_id, array $scope, ?string $relationship_type=null) : bool {
+		if ($object_id <= 0) { return false; }
+		if (!($scope['restricted'] ?? false)) { return true; }
+
+		$collection_lookup = $this->getAllowedCollectionIdLookup($scope);
+		foreach($this->getCollectionIDsForObject($object_id, $relationship_type) as $collection_id) {
+			if ($this->isCollectionIDAllowed($collection_id, $scope, $collection_lookup)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	public function canAccessObject(?ca_users $user, $object, ?string $relationship_type=null) : bool {
+		$scope = $this->getScopeForUser($user);
+		if (!($scope['restricted'] ?? false)) { return true; }
+
+		$object_id = $this->normalizeObjectID($object);
+		return $this->isObjectIDAllowed($object_id, $scope, $relationship_type);
+	}
+
 	private function getAllowedRootCollectionIdsForUserId(int $user_id) : array {
 		$map = $this->getConfigAssoc('user_root_collection_map');
 		if (!is_array($map) || !sizeof($map) || ($user_id <= 0)) { return []; }
@@ -116,6 +189,40 @@ class CollectionAccessScope {
 		$all = array_values(array_unique(array_merge($root_ids, array_map('intval', $descendants))));
 		sort($all, SORT_NUMERIC);
 		return $all;
+	}
+
+	private function normalizeCollectionID($collection) : int {
+		if ($collection instanceof ca_collections) {
+			return (int)$collection->getPrimaryKey();
+		}
+		return (int)$collection;
+	}
+
+	private function normalizeObjectID($object) : int {
+		if ($object instanceof ca_objects) {
+			return (int)$object->getPrimaryKey();
+		}
+		return (int)$object;
+	}
+
+	private function normalizeObjectInstance($object) : ?ca_objects {
+		if ($object instanceof ca_objects) {
+			return $object;
+		}
+		$object_id = (int)$object;
+		if ($object_id <= 0) { return null; }
+
+		$t_object = new ca_objects();
+		if (!$t_object->load($object_id)) { return null; }
+		return $t_object;
+	}
+
+	private function getAppConfigValue(string $key) {
+		static $config = null;
+		if (!$config) {
+			$config = Configuration::load(__CA_APP_DIR__ . '/conf/app.conf');
+		}
+		return $config->get($key);
 	}
 
 	private function getConfig(string $key) {
