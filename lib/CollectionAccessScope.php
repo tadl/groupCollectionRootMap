@@ -81,6 +81,13 @@ class CollectionAccessScope {
 		];
 	}
 
+	public function getAssignedRootCollectionIdsForUser(?ca_users $user) : array {
+		if (!($user instanceof ca_users) || !($user_id = (int)$user->getPrimaryKey())) {
+			return [];
+		}
+		return $this->getAllowedRootCollectionIdsForUserId($user_id);
+	}
+
 	public function getAllowedCollectionIdLookup(array $scope) : array {
 		$ids = $scope['allowed_collection_ids'] ?? [];
 		if (!is_array($ids)) { return []; }
